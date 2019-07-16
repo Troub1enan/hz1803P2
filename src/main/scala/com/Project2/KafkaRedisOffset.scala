@@ -1,14 +1,17 @@
 package com.Project2
 
 import java.lang
+import java.text.SimpleDateFormat
 
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.serialization.StringDeserializer
 import org.apache.spark.SparkConf
+import org.apache.spark.rdd.RDD
 import org.apache.spark.streaming.dstream.InputDStream
 import org.apache.spark.streaming.kafka010._
 import org.apache.spark.streaming.{Seconds, StreamingContext}
+import com.alibaba.fastjson.JSON
 
 /**
   * Redis管理Offset
@@ -71,7 +74,31 @@ object KafkaRedisOffset {
       rdd=>
         val offestRange: Array[OffsetRange] = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
         // 业务处理
-        val rdd2: Unit = rdd.map(_.value()).foreach(println)
+        val rdd2: RDD[String] = rdd.map(_.value())
+        rdd2.map(x => {
+          //读取json
+          val json = JSON.parseObject(x)
+          //获取是否充值成功的结果
+          val bussinessRst: String =  json.getString("bussinessRst")
+          //如果成功，那么获取充值的金额
+          if(bussinessRst.equals("0000")) {
+            val chargefee = json.getInteger("chargefee")
+          }else {
+            //如果不成功，那么充值金额等于0
+            val chargefee = 0
+          }
+          //统计成功充值的个数
+          val ifsuccess = if (bussinessRst.equals("0000")) 1 else 0
+          // 开始充值时间
+          val starttime = json.getString("requestId")
+          // 结束充值时间
+          val stoptime = json.getString("receiveNotifyTime")
+          //之后获取14位转换为时间戳
+          val start = new SimpleDateFormat("yyyyMMddHHmmss").parse(starttime.substring(0,14)).getTime()
+          val stop = new SimpleDateFormat("yyyyMMddHHmmss").parse(stoptime.substring(0,14)).getTime()
+          //整个充值过程的总时长
+          val chargetime = stop - start
+        })
 
 
         // 将偏移量进行更新
