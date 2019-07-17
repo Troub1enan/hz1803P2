@@ -70,41 +70,53 @@ object KafkaRedisOffset {
           ConsumerStrategies.Assign[String,String](fromOffset.keys,kafkas,fromOffset)
         )
       }
+    // 对数据进行处理
+    val file = ssc.sparkContext.textFile("D:\\HZ1803\\项目（二）01\\充值平台实时统计分析\\city.txt")
+    val map = file.map(t=>(t.split(" ")(0),t.split(" ")(1))).collect().toMap
+    // 将数据进行广播
+    val broad = ssc.sparkContext.broadcast(map)
     stream.foreachRDD({
       rdd=>
-        val offestRange: Array[OffsetRange] = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
+        val offestRange = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
         // 业务处理
-        val rdd2: RDD[String] = rdd.map(_.value())
-        rdd2.map(x => {
-          //读取json
-          val json = JSON.parseObject(x)
-          //获取是否充值成功的结果
-          val bussinessRst: String =  json.getString("bussinessRst")
-          //如果成功，那么获取充值的金额
-          if(bussinessRst.equals("0000")) {
-            val chargefee = json.getInteger("chargefee")
-          }else {
-            //如果不成功，那么充值金额等于0
-            val chargefee = 0
-          }
-          //统计成功充值的个数
-          val ifsuccess = if (bussinessRst.equals("0000")) 1 else 0
-          // 开始充值时间
-          val starttime = json.getString("requestId")
-          // 结束充值时间
-          val stoptime = json.getString("receiveNotifyTime")
-          //之后获取14位转换为时间戳
-          val start = new SimpleDateFormat("yyyyMMddHHmmss").parse(starttime.substring(0,14)).getTime()
-          val stop = new SimpleDateFormat("yyyyMMddHHmmss").parse(stoptime.substring(0,14)).getTime()
-          //整个充值过程的总时长
-          val chargetime = stop - start
+        val baseData = rdd.map(_.value()).map(t=>JSON.parseObject(t))
+          // 过滤需要的数据（充值通知）
+          .filter(_.getString("serviceName").equalsIgnoreCase("reChargeNotifyReq"))
+          .map(t=>{
+            // 先判断一下充值结果是否成功
+            val result = t.getString("bussinessRst") // 充值结果
+            val money:Double = if(result.equals("0000")) t.getDouble("chargefee") else 0.0 // 充值金额
+            val feecount = if(result.equals("0000"))  1 else 0 // 充值成功数
+            val starttime = t.getString("requestId") // 开始充值时间
+            val stoptime = t.getString("receiveNotifyTime") // 结束充值时间
+            val pro = t.getString("provinceCode") // 省份编码
+            val province = broad.value.get(pro).get // 根据省份编码取到省份名字
+            // 充值时长
+            val costtime = Utils_Time.consttiem(starttime,stoptime)
+            (starttime.substring(0,8)
+              ,starttime.substring(0,12)
+              ,starttime.substring(0,10)
+              ,List[Double](1,money,feecount,costtime)
+              ,(province,starttime.substring(0,10))
+            )
+          }).cache()
+        // 指标一 1
+        val result1 = baseData.map(t=>(t._1,t._4)).reduceByKey((list1,list2)=>{
+          // list1(1,2,3).zip(list2(1,2,3)) = list((1,1),(2,2),(3,3))
+          // map处理内部的元素相加
+          list1.zip(list2).map(t=>t._1+t._2)
         })
-
-
+        JedisAPP.Result01(result1)
+        // 指标一 2
+        val result2 = baseData.map(t=>(t._3,t._4.head)).reduceByKey(_+_)
+        JedisAPP.Result02(result2)
+        // 指标 二
+        val result3 = baseData.map(t=>(t._5,t._4)).reduceByKey((list1,list2)=>{list1.zip(list2).map(t=>t._1+t._2)})
+        JedisAPP.Result03(result3)
         // 将偏移量进行更新
         val jedis = JedisConnectionPool.getConnection()
         for (or<-offestRange){
-          jedis.hset(groupId,or.topic+"-"+or.partition,or.untilOffset.toString)
+          jedis.hset(groupId,or.topic+"-"+or.partition,or.untilOffset.toString)0
         }
         jedis.close()
     })
