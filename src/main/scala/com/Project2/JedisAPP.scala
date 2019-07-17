@@ -13,7 +13,7 @@ object JedisAPP {
     lines.foreachPartition(f=>{
       val jedis = JedisConnectionPool.getConnection()
       f.foreach(t=>{
-        // 充值订单数
+        // 充值订单数，通过hincrBy去将多个批次存入到redis里面，这边的t就是之前的result1
         jedis.hincrBy(t._1,"count",t._2.head.toLong)
         // 充值金额
         jedis.hincrByFloat(t._1,"money",t._2(1))

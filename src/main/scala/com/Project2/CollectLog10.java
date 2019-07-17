@@ -29,7 +29,7 @@ public class CollectLog10 {
            BufferedReader bf = new BufferedReader(
                    new FileReader(
                            new File(
-                                   "E:\\1.txt")));// 路径
+                                   "E:\\千峰学习资料\\Spark\\项目（二）01\\充值平台实时统计分析\\cmcc.json")));// 路径
            String line = null;
            while((line=bf.readLine())!=null){
                Thread.sleep(1000);

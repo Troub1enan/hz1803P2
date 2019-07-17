@@ -1,8 +1,8 @@
 package com.Project2
 
 import java.lang
-import java.text.SimpleDateFormat
 
+import com.alibaba.fastjson.JSON
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.serialization.StringDeserializer
@@ -11,7 +11,6 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.streaming.dstream.InputDStream
 import org.apache.spark.streaming.kafka010._
 import org.apache.spark.streaming.{Seconds, StreamingContext}
-import com.alibaba.fastjson.JSON
 
 /**
   * Redis管理Offset
@@ -71,16 +70,21 @@ object KafkaRedisOffset {
         )
       }
     // 对数据进行处理
-    val file = ssc.sparkContext.textFile("D:\\HZ1803\\项目（二）01\\充值平台实时统计分析\\city.txt")
-    val map = file.map(t=>(t.split(" ")(0),t.split(" ")(1))).collect().toMap
+    val file = ssc.sparkContext.textFile("E:\\千峰学习资料\\Spark\\项目（二）01\\充值平台实时统计分析\\city.txt")
+    val map: Map[String, String] = file.map(t=>(t.split(" ")(0),t.split(" ")(1))).collect().toMap
+    //注意，这里面的存储与方式是Map["100"->"北京","200"->广东"]
     // 将数据进行广播
+    //注意，我们无法广播RDD
     val broad = ssc.sparkContext.broadcast(map)
+    //循环这个批次中的RDD
     stream.foreachRDD({
       rdd=>
         val offestRange = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
         // 业务处理
-        val baseData = rdd.map(_.value()).map(t=>JSON.parseObject(t))
+        //获取数据,循环rdd获取其中的一条数据
+        val baseData: RDD[(String, String, String, List[Double], (String, String))] = rdd.map(_.value()).map(t=>JSON.parseObject(t))
           // 过滤需要的数据（充值通知）
+          //filter和filterNot以返回真和假
           .filter(_.getString("serviceName").equalsIgnoreCase("reChargeNotifyReq"))
           .map(t=>{
             // 先判断一下充值结果是否成功
@@ -90,33 +94,39 @@ object KafkaRedisOffset {
             val starttime = t.getString("requestId") // 开始充值时间
             val stoptime = t.getString("receiveNotifyTime") // 结束充值时间
             val pro = t.getString("provinceCode") // 省份编码
-            val province = broad.value.get(pro).get // 根据省份编码取到省份名字
+            val province: String = broad.value.get(pro).get // 根据省份编码取到省份名字
             // 充值时长
             val costtime = Utils_Time.consttiem(starttime,stoptime)
-            (starttime.substring(0,8)
-              ,starttime.substring(0,12)
-              ,starttime.substring(0,10)
+            (starttime.substring(0,8)//天
+              ,starttime.substring(0,12)//分钟
+              ,starttime.substring(0,10)//小时
               ,List[Double](1,money,feecount,costtime)
-              ,(province,starttime.substring(0,10))
+              ,(province,starttime.substring(0,10))//省份和登陆时间
             )
           }).cache()
         // 指标一 1
-        val result1 = baseData.map(t=>(t._1,t._4)).reduceByKey((list1,list2)=>{
+        //list1和list2分别表示的这个批次和下一个批次
+        val result1: RDD[(String, List[Double])] = baseData.map(t=>(t._1,t._4)).reduceByKey((list1, list2)=>{
           // list1(1,2,3).zip(list2(1,2,3)) = list((1,1),(2,2),(3,3))
           // map处理内部的元素相加
           list1.zip(list2).map(t=>t._1+t._2)
+
         })
         JedisAPP.Result01(result1)
         // 指标一 2
         val result2 = baseData.map(t=>(t._3,t._4.head)).reduceByKey(_+_)
         JedisAPP.Result02(result2)
         // 指标 二
-        val result3 = baseData.map(t=>(t._5,t._4)).reduceByKey((list1,list2)=>{list1.zip(list2).map(t=>t._1+t._2)})
+        val result3: RDD[((String, String), List[Double])] = baseData.map(t=>(t._5,t._4)).reduceByKey((list1, list2)=>{list1.zip(list2).map(t=>t._1+t._2)})
         JedisAPP.Result03(result3)
+
+        //指标三,表示每个省份，订单量
+        val result4 = baseData.map(t=>(t._5._1,1)).reduceByKey(_+_)
+        JedisAPP.Result04(result4)
         // 将偏移量进行更新
         val jedis = JedisConnectionPool.getConnection()
         for (or<-offestRange){
-          jedis.hset(groupId,or.topic+"-"+or.partition,or.untilOffset.toString)0
+          jedis.hset(groupId,or.topic+"-"+or.partition,or.untilOffset.toString)
         }
         jedis.close()
     })
